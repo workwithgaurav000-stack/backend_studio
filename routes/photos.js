@@ -2,7 +2,7 @@ const express = require("express");
 const path = require("path");
 const archiver = require("archiver");
 const fetch = require("node-fetch");
-const { photoUpload, uploadToCloudinary } = require("../config/cloudinary");
+const { photoUpload, uploadToCloudinary, isCloudinaryConfigured } = require("../config/cloudinary");
 
 const Photo = require("../models/Photo");
 const User = require("../models/User");
@@ -46,6 +46,14 @@ router.post(
     photoUpload.array("photos", 100),
     async (req, res) => {
         try {
+            // Check if Cloudinary is configured
+            if (!isCloudinaryConfigured()) {
+                return res.status(500).json({
+                    success: false,
+                    message: "❌ Cloudinary is not configured. Please set CLOUDINARY_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in Render environment."
+                });
+            }
+
             if (!req.files || req.files.length === 0) {
                 return res.status(400).json({
                     success: false,
@@ -54,25 +62,30 @@ router.post(
             }
 
             const uploadedPhotos = [];
+            const errors = [];
 
             // Upload each file to Cloudinary
             for (const file of req.files) {
                 try {
+                    console.log(`Uploading ${file.originalname} to Cloudinary...`);
                     const cloudinaryResult = await uploadToCloudinary(file, "photography-studio/photos", "auto");
+                    console.log(`✅ Successfully uploaded ${file.originalname}`);
                     uploadedPhotos.push({
                         client: req.params.clientId,
                         fileName: file.originalname,
                         fileUrl: cloudinaryResult.secure_url
                     });
                 } catch (uploadErr) {
-                    console.error(`Error uploading ${file.originalname}:`, uploadErr);
+                    const errorMsg = `Failed to upload ${file.originalname}: ${uploadErr.message}`;
+                    console.error(errorMsg);
+                    errors.push(errorMsg);
                 }
             }
 
             if (uploadedPhotos.length === 0) {
                 return res.status(400).json({
                     success: false,
-                    message: "Failed to upload any photos. Please try again."
+                    message: "❌ Failed to upload any photos. " + errors.join(" | ")
                 });
             }
 
@@ -88,7 +101,7 @@ router.post(
             console.error("UPLOAD PHOTOS ERROR:", error);
             return res.status(500).json({
                 success: false,
-                message: error.message || "Photo upload failed."
+                message: "Photo upload failed: " + error.message
             });
         }
     }

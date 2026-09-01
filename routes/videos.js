@@ -2,7 +2,7 @@ const express = require("express");
 const path = require("path");
 const archiver = require("archiver");
 const fetch = require("node-fetch");
-const { videoUpload, uploadToCloudinary } = require("../config/cloudinary");
+const { videoUpload, uploadToCloudinary, isCloudinaryConfigured } = require("../config/cloudinary");
 
 const Video = require("../models/Video");
 const User = require("../models/User");
@@ -46,6 +46,14 @@ router.post(
     videoUpload.array("videos", 30),
     async (req, res) => {
         try {
+            // Check if Cloudinary is configured
+            if (!isCloudinaryConfigured()) {
+                return res.status(500).json({
+                    success: false,
+                    message: "❌ Cloudinary is not configured. Please set CLOUDINARY_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in Render environment."
+                });
+            }
+
             const clientId = req.params.clientId;
 
             if (!clientId) {
@@ -63,25 +71,30 @@ router.post(
             }
 
             const uploadedVideos = [];
+            const errors = [];
 
             // Upload each file to Cloudinary
             for (const file of req.files) {
                 try {
+                    console.log(`Uploading ${file.originalname} to Cloudinary...`);
                     const cloudinaryResult = await uploadToCloudinary(file, "photography-studio/videos", "video");
+                    console.log(`✅ Successfully uploaded ${file.originalname}`);
                     uploadedVideos.push({
                         client: clientId,
                         fileName: file.originalname,
                         fileUrl: cloudinaryResult.secure_url
                     });
                 } catch (uploadErr) {
-                    console.error(`Error uploading ${file.originalname}:`, uploadErr);
+                    const errorMsg = `Failed to upload ${file.originalname}: ${uploadErr.message}`;
+                    console.error(errorMsg);
+                    errors.push(errorMsg);
                 }
             }
 
             if (uploadedVideos.length === 0) {
                 return res.status(400).json({
                     success: false,
-                    message: "Failed to upload any videos. Please try again."
+                    message: "❌ Failed to upload any videos. " + errors.join(" | ")
                 });
             }
 
@@ -97,7 +110,7 @@ router.post(
             console.error("VIDEO UPLOAD ERROR:", error);
             return res.status(500).json({
                 success: false,
-                message: error.message || "Video upload failed."
+                message: "Video upload failed: " + error.message
             });
         }
     }

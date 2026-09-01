@@ -9,6 +9,13 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+// Verify Cloudinary is configured
+const isCloudinaryConfigured = () => {
+    return process.env.CLOUDINARY_NAME && 
+           process.env.CLOUDINARY_API_KEY && 
+           process.env.CLOUDINARY_API_SECRET;
+};
+
 // Memory storage for multer - files are stored in memory before upload to Cloudinary
 const memoryStorage = multer.memoryStorage();
 
@@ -79,5 +86,6 @@ module.exports = {
     cloudinary,
     photoUpload,
     videoUpload,
-    uploadToCloudinary
+    uploadToCloudinary,
+    isCloudinaryConfigured
 };
