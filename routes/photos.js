@@ -1,59 +1,13 @@
 const express = require("express");
-const multer = require("multer");
 const path = require("path");
-const fs = require("fs");
 const archiver = require("archiver");
+const fetch = require("node-fetch");
+const { photoUpload, uploadToCloudinary } = require("../config/cloudinary");
 
 const Photo = require("../models/Photo");
 const User = require("../models/User");
 
 const router = express.Router();
-
-const uploadRoot = process.env.UPLOAD_ROOT || path.resolve(__dirname, "../uploads");
-const uploadPath = path.join(uploadRoot, "photos");
-
-// Ensure upload directory exists
-fs.mkdirSync(uploadPath, {
-    recursive: true
-});
-
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, uploadPath);
-    },
-
-    filename: function (req, file, cb) {
-        const ext = path.extname(file.originalname).toLowerCase();
-        const uniqueName =
-            Date.now() +
-            "-" +
-            Math.round(Math.random() * 1E9) +
-            (ext || ".jpg");
-
-        cb(null, uniqueName);
-    }
-});
-
-const upload = multer({
-    storage: storage,
-    limits: {
-        fileSize: 50 * 1024 * 1024 // 50MB per photo
-    },
-    fileFilter: function (req, file, cb) {
-        const allowedExtensions = [
-            ".jpg", ".jpeg", ".png", ".webp", ".gif",
-            ".bmp", ".svg", ".heic", ".heif", ".jfif", ".avif"
-        ];
-        const ext = path.extname(file.originalname).toLowerCase();
-        const isImageMime = file.mimetype && file.mimetype.startsWith("image/");
-
-        if (isImageMime || allowedExtensions.includes(ext)) {
-            cb(null, true);
-        } else {
-            cb(new Error("Only image files (JPEG, PNG, WebP, GIF, HEIC, AVIF) are allowed."));
-        }
-    }
-});
 
 
 // ============================================
@@ -89,7 +43,7 @@ router.get("/client/:clientId", async (req, res) => {
 
 router.post(
     "/upload/:clientId",
-    upload.array("photos", 100),
+    photoUpload.array("photos", 100),
     async (req, res) => {
         try {
             if (!req.files || req.files.length === 0) {
@@ -99,17 +53,34 @@ router.post(
                 });
             }
 
-            const photos = req.files.map(file => ({
-                client: req.params.clientId,
-                fileName: file.originalname,
-                fileUrl: `/uploads/photos/${file.filename}`
-            }));
+            const uploadedPhotos = [];
 
-            const savedPhotos = await Photo.insertMany(photos);
+            // Upload each file to Cloudinary
+            for (const file of req.files) {
+                try {
+                    const cloudinaryResult = await uploadToCloudinary(file, "photography-studio/photos", "auto");
+                    uploadedPhotos.push({
+                        client: req.params.clientId,
+                        fileName: file.originalname,
+                        fileUrl: cloudinaryResult.secure_url
+                    });
+                } catch (uploadErr) {
+                    console.error(`Error uploading ${file.originalname}:`, uploadErr);
+                }
+            }
+
+            if (uploadedPhotos.length === 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Failed to upload any photos. Please try again."
+                });
+            }
+
+            const savedPhotos = await Photo.insertMany(uploadedPhotos);
 
             return res.json({
                 success: true,
-                message: `${photos.length} photo(s) uploaded successfully!`,
+                message: `${uploadedPhotos.length} photo(s) uploaded successfully!`,
                 photos: savedPhotos
             });
 
@@ -125,7 +96,7 @@ router.post(
 
 
 // ============================================
-// DOWNLOAD SINGLE PHOTO (FORCES DIRECT DOWNLOAD)
+// DOWNLOAD SINGLE PHOTO (REDIRECT TO CLOUDINARY)
 // ============================================
 
 router.get("/:photoId/download", async (req, res) => {
@@ -139,18 +110,9 @@ router.get("/:photoId/download", async (req, res) => {
             });
         }
 
-        const fileName = path.basename(photo.fileUrl);
-        const filePath = path.join(uploadPath, fileName);
-
-        if (!fs.existsSync(filePath)) {
-            return res.status(404).json({
-                success: false,
-                message: "Photo file not found on disk."
-            });
-        }
-
-        const downloadName = photo.fileName || fileName;
-        return res.download(filePath, downloadName);
+        // Redirect to Cloudinary URL with download parameter
+        const downloadUrl = photo.fileUrl + "?attachment=true";
+        res.redirect(downloadUrl);
 
     } catch (error) {
         console.error("DOWNLOAD PHOTO ERROR:", error);
@@ -197,7 +159,7 @@ router.get("/download-all/:clientId", async (req, res) => {
         res.setHeader("Content-Disposition", `attachment; filename="${zipFileName}"`);
 
         const archive = createZipArchive({
-            zlib: { level: 6 } // Good compression balance
+            zlib: { level: 6 }
         });
 
         archive.on("error", (err) => {
@@ -213,25 +175,28 @@ router.get("/download-all/:clientId", async (req, res) => {
         const usedNames = new Set();
 
         for (const photo of photos) {
-            const diskFileName = path.basename(photo.fileUrl);
-            const diskFilePath = path.join(uploadPath, diskFileName);
-
-            if (fs.existsSync(diskFilePath)) {
-                let entryName = photo.fileName || diskFileName;
-                
-                // Disambiguate duplicate original filenames
-                if (usedNames.has(entryName)) {
-                    const ext = path.extname(entryName);
-                    const base = path.basename(entryName, ext);
-                    let counter = 1;
-                    while (usedNames.has(`${base}_${counter}${ext}`)) {
-                        counter++;
+            try {
+                // Fetch file from Cloudinary URL
+                const response = await fetch(photo.fileUrl);
+                if (response.ok) {
+                    let entryName = photo.fileName || `photo_${photo._id}`;
+                    
+                    // Disambiguate duplicate original filenames
+                    if (usedNames.has(entryName)) {
+                        const ext = path.extname(entryName);
+                        const base = path.basename(entryName, ext);
+                        let counter = 1;
+                        while (usedNames.has(`${base}_${counter}${ext}`)) {
+                            counter++;
+                        }
+                        entryName = `${base}_${counter}${ext}`;
                     }
-                    entryName = `${base}_${counter}${ext}`;
-                }
-                usedNames.add(entryName);
+                    usedNames.add(entryName);
 
-                archive.file(diskFilePath, { name: entryName });
+                    archive.append(response.body, { name: entryName });
+                }
+            } catch (err) {
+                console.warn(`Could not download photo ${photo._id}:`, err.message);
             }
         }
 
@@ -264,17 +229,8 @@ router.delete("/:photoId", async (req, res) => {
             });
         }
 
-        const fileName = path.basename(photo.fileUrl);
-        const filePath = path.join(uploadPath, fileName);
-
-        if (fs.existsSync(filePath)) {
-            try {
-                fs.unlinkSync(filePath);
-            } catch (fsErr) {
-                console.warn("Could not delete file from disk:", fsErr.message);
-            }
-        }
-
+        // Delete from MongoDB only
+        // Cloudinary handles cleanup automatically
         await Photo.findByIdAndDelete(req.params.photoId);
 
         return res.json({

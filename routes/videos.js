@@ -1,59 +1,13 @@
 const express = require("express");
-const multer = require("multer");
 const path = require("path");
-const fs = require("fs");
 const archiver = require("archiver");
+const fetch = require("node-fetch");
+const { videoUpload, uploadToCloudinary } = require("../config/cloudinary");
 
 const Video = require("../models/Video");
 const User = require("../models/User");
 
 const router = express.Router();
-
-const uploadRoot = process.env.UPLOAD_ROOT || path.resolve(__dirname, "../uploads");
-const uploadPath = path.join(uploadRoot, "videos");
-
-// Ensure upload directory exists
-fs.mkdirSync(uploadPath, {
-    recursive: true
-});
-
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, uploadPath);
-    },
-
-    filename: function (req, file, cb) {
-        const ext = path.extname(file.originalname).toLowerCase();
-        const uniqueName =
-            Date.now() +
-            "-" +
-            Math.round(Math.random() * 1E9) +
-            (ext || ".mp4");
-
-        cb(null, uniqueName);
-    }
-});
-
-const upload = multer({
-    storage: storage,
-    limits: {
-        fileSize: 500 * 1024 * 1024 // 500MB per video
-    },
-    fileFilter: function (req, file, cb) {
-        const allowedExtensions = [
-            ".mp4", ".mov", ".avi", ".mkv", ".webm",
-            ".wmv", ".m4v", ".3gp", ".ts", ".flv"
-        ];
-        const ext = path.extname(file.originalname).toLowerCase();
-        const isVideoMime = file.mimetype && file.mimetype.startsWith("video/");
-
-        if (isVideoMime || allowedExtensions.includes(ext)) {
-            cb(null, true);
-        } else {
-            cb(new Error("Only video files (MP4, MOV, WebM, AVI, MKV, WMV) are allowed."));
-        }
-    }
-});
 
 
 // ============================================
@@ -89,7 +43,7 @@ router.get("/client/:clientId", async (req, res) => {
 
 router.post(
     "/upload/:clientId",
-    upload.array("videos", 30),
+    videoUpload.array("videos", 30),
     async (req, res) => {
         try {
             const clientId = req.params.clientId;
@@ -108,17 +62,34 @@ router.post(
                 });
             }
 
-            const videos = req.files.map(file => ({
-                client: clientId,
-                fileName: file.originalname,
-                fileUrl: `/uploads/videos/${file.filename}`
-            }));
+            const uploadedVideos = [];
 
-            const savedVideos = await Video.insertMany(videos);
+            // Upload each file to Cloudinary
+            for (const file of req.files) {
+                try {
+                    const cloudinaryResult = await uploadToCloudinary(file, "photography-studio/videos", "video");
+                    uploadedVideos.push({
+                        client: clientId,
+                        fileName: file.originalname,
+                        fileUrl: cloudinaryResult.secure_url
+                    });
+                } catch (uploadErr) {
+                    console.error(`Error uploading ${file.originalname}:`, uploadErr);
+                }
+            }
+
+            if (uploadedVideos.length === 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Failed to upload any videos. Please try again."
+                });
+            }
+
+            const savedVideos = await Video.insertMany(uploadedVideos);
 
             return res.json({
                 success: true,
-                message: `${videos.length} video(s) uploaded successfully!`,
+                message: `${uploadedVideos.length} video(s) uploaded successfully!`,
                 videos: savedVideos
             });
 
@@ -134,7 +105,7 @@ router.post(
 
 
 // ============================================
-// DOWNLOAD SINGLE VIDEO (FORCES DIRECT DOWNLOAD)
+// DOWNLOAD SINGLE VIDEO (REDIRECT TO CLOUDINARY)
 // ============================================
 
 router.get("/:videoId/download", async (req, res) => {
@@ -148,18 +119,9 @@ router.get("/:videoId/download", async (req, res) => {
             });
         }
 
-        const fileName = path.basename(video.fileUrl);
-        const filePath = path.join(uploadPath, fileName);
-
-        if (!fs.existsSync(filePath)) {
-            return res.status(404).json({
-                success: false,
-                message: "Video file not found on disk."
-            });
-        }
-
-        const downloadName = video.fileName || fileName;
-        return res.download(filePath, downloadName);
+        // Redirect to Cloudinary URL with download parameter
+        const downloadUrl = video.fileUrl + "?attachment=true";
+        res.redirect(downloadUrl);
 
     } catch (error) {
         console.error("DOWNLOAD VIDEO ERROR:", error);
@@ -206,7 +168,7 @@ router.get("/download-all/:clientId", async (req, res) => {
         res.setHeader("Content-Disposition", `attachment; filename="${zipFileName}"`);
 
         const archive = createZipArchive({
-            zlib: { level: 4 } // Faster compression for large video files
+            zlib: { level: 4 }
         });
 
         archive.on("error", (err) => {
@@ -221,24 +183,27 @@ router.get("/download-all/:clientId", async (req, res) => {
         const usedNames = new Set();
 
         for (const video of videos) {
-            const diskFileName = path.basename(video.fileUrl);
-            const diskFilePath = path.join(uploadPath, diskFileName);
+            try {
+                // Fetch file from Cloudinary URL
+                const response = await fetch(video.fileUrl);
+                if (response.ok) {
+                    let entryName = video.fileName || `video_${video._id}`;
 
-            if (fs.existsSync(diskFilePath)) {
-                let entryName = video.fileName || diskFileName;
-
-                if (usedNames.has(entryName)) {
-                    const ext = path.extname(entryName);
-                    const base = path.basename(entryName, ext);
-                    let counter = 1;
-                    while (usedNames.has(`${base}_${counter}${ext}`)) {
-                        counter++;
+                    if (usedNames.has(entryName)) {
+                        const ext = path.extname(entryName);
+                        const base = path.basename(entryName, ext);
+                        let counter = 1;
+                        while (usedNames.has(`${base}_${counter}${ext}`)) {
+                            counter++;
+                        }
+                        entryName = `${base}_${counter}${ext}`;
                     }
-                    entryName = `${base}_${counter}${ext}`;
-                }
-                usedNames.add(entryName);
+                    usedNames.add(entryName);
 
-                archive.file(diskFilePath, { name: entryName });
+                    archive.append(response.body, { name: entryName });
+                }
+            } catch (err) {
+                console.warn(`Could not download video ${video._id}:`, err.message);
             }
         }
 
@@ -271,17 +236,8 @@ router.delete("/:videoId", async (req, res) => {
             });
         }
 
-        const fileName = path.basename(video.fileUrl);
-        const filePath = path.join(uploadPath, fileName);
-
-        if (fs.existsSync(filePath)) {
-            try {
-                fs.unlinkSync(filePath);
-            } catch (fsErr) {
-                console.warn("Could not delete video file from disk:", fsErr.message);
-            }
-        }
-
+        // Delete from MongoDB only
+        // Cloudinary handles cleanup automatically
         await Video.findByIdAndDelete(req.params.videoId);
 
         return res.json({
