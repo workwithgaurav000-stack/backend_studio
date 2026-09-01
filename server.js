@@ -17,9 +17,11 @@ const videoRoutes = require("./routes/videos");
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+const uploadRoot = process.env.UPLOAD_ROOT || path.join(__dirname, "uploads");
+
 // Ensure upload directories exist
-fs.mkdirSync(path.join(__dirname, "uploads/photos"), { recursive: true });
-fs.mkdirSync(path.join(__dirname, "uploads/videos"), { recursive: true });
+fs.mkdirSync(path.join(uploadRoot, "photos"), { recursive: true });
+fs.mkdirSync(path.join(uploadRoot, "videos"), { recursive: true });
 
 
 // ==========================================
@@ -55,14 +57,9 @@ app.use("/api/videos", videoRoutes);
 
 app.use(
     "/uploads",
-    express.static(
-        path.join(__dirname, "uploads")
-    )
+    express.static(uploadRoot)
 );
-// Change this:
-app.use(express.static('/opt/render/project/frontend'));
 
-// To relative path (agar frontend folder root me hai):
 app.use(express.static(path.join(__dirname, '../frontend')));
 
 // ==========================================

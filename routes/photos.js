@@ -9,10 +9,8 @@ const User = require("../models/User");
 
 const router = express.Router();
 
-const uploadPath = path.resolve(
-    __dirname,
-    "../uploads/photos"
-);
+const uploadRoot = process.env.UPLOAD_ROOT || path.resolve(__dirname, "../uploads");
+const uploadPath = path.join(uploadRoot, "photos");
 
 // Ensure upload directory exists
 fs.mkdirSync(uploadPath, {
