@@ -162,7 +162,7 @@ async function startServer() {
         console.log("✅ MongoDB Connected Successfully!");
 
         app.listen(PORT, () => {
-            console.log(`🚀 Server running at https://backend-studio-wv1k.onrender.com:`);
+            console.log(`🚀 Server running at https://backend-studio-2.onrender.com:`);
         });
 
     } catch (error) {
